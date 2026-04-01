@@ -1,4 +1,5 @@
 const express = require('express')
+const logger = require('../../utils/logger')
 
 function createCloudfunctionRouter({ cloudfunctions }) {
   const router = express.Router()
@@ -24,6 +25,11 @@ function createCloudfunctionRouter({ cloudfunctions }) {
 
     const targetFunction = cloudfunctions[functionName]
     if (!targetFunction) {
+      logger.warn('cloudfunction not found', {
+        functionName,
+        path: req.originalUrl || req.url
+      })
+
       res.send({
         code: -1,
         error: 'function not found'
@@ -32,6 +38,11 @@ function createCloudfunctionRouter({ cloudfunctions }) {
     }
 
     if (typeof targetFunction.main !== 'function') {
+      logger.warn('cloudfunction main is invalid', {
+        functionName,
+        path: req.originalUrl || req.url
+      })
+
       res.send({
         code: -1,
         error: 'function main is invalid'
@@ -47,11 +58,21 @@ function createCloudfunctionRouter({ cloudfunctions }) {
         deviceId: 'test'
       })
 
+      logger.info('cloudfunction executed', {
+        functionName,
+        resultCode: result && result.code
+      })
+
       res.send({
         result
       })
     } catch (error) {
-      console.error(`[cloudfunction:${functionName}]`, error)
+      logger.error('cloudfunction execute failed', error, {
+        functionName,
+        path: req.originalUrl || req.url,
+        params
+      })
+
       res.status(500).send({
         code: -1,
         error: 'cloudfunction execute failed',

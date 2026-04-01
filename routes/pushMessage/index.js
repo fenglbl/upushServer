@@ -1,4 +1,5 @@
 const express = require('express')
+const logger = require('../../utils/logger')
 
 /**
  * 创建 pushMessage 路由
@@ -79,6 +80,12 @@ async function pushMessage(pushData, req, res, cloudfunctions, wsServer) {
       deviceId: 'test'
     })
 
+    logger.info('pushMessage executed', {
+      id: pushData.id,
+      title: pushData.title,
+      resultCode: pushRes && pushRes.code
+    })
+
     // 推送成功后，给对应 id 的在线 WebSocket 客户端发一条实时通知
     // 这样客户端除了收到系统推送外，也能在前台立刻感知到新消息
     if (pushRes && pushRes.code === 200 && wsServer) {
@@ -96,7 +103,12 @@ async function pushMessage(pushData, req, res, cloudfunctions, wsServer) {
 
     res.send({ code: 200, msg: '推送已提交' })
   } catch (error) {
-    console.error('[pushMessage] execute failed:', error)
+    logger.error('pushMessage execute failed', error, {
+      path: req.originalUrl || req.url,
+      method: req.method,
+      pushData
+    })
+
     res.status(500).send({
       code: 500,
       msg: '推送处理失败',
