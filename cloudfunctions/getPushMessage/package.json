@@ -1,0 +1,7 @@
+{
+  "name": "getPushMessage",
+  "dependencies": {},
+  "extensions": {
+    "uni-cloud-jql": {}
+  }
+}

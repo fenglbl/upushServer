@@ -1,0 +1,6 @@
+{
+  "name": "sendEmailCode",
+  "dependencies": {
+    "resend": "^4.0.1"
+  }
+}

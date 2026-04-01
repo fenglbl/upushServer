@@ -1,0 +1,6 @@
+{
+  "name": "register",
+  "dependencies": {
+    "md5": "^2.3.0"
+  }
+}
