@@ -83,7 +83,9 @@ async function pushMessage(pushData, req, res, cloudfunctions, wsServer) {
     logger.info('pushMessage executed', {
       id: pushData.id,
       title: pushData.title,
-      resultCode: pushRes && pushRes.code
+      resultCode: pushRes && pushRes.code,
+      resultMsg: pushRes && pushRes.msg,
+      resultData: pushRes && pushRes.data
     })
 
     // 推送成功后，给对应 id 的在线 WebSocket 客户端发一条实时通知
@@ -101,7 +103,22 @@ async function pushMessage(pushData, req, res, cloudfunctions, wsServer) {
       wsServer.broadcast(JSON.stringify(wsData), String(pushData.id))
     }
 
-    res.send({ code: 200, msg: '推送已提交' })
+    const isSuccess = pushRes && (pushRes.code === 200 || pushRes.code === 207)
+
+    if (!isSuccess) {
+      res.status(500).send({
+        code: pushRes && pushRes.code ? pushRes.code : 500,
+        msg: pushRes && pushRes.msg ? pushRes.msg : '推送失败',
+        data: pushRes && pushRes.data ? pushRes.data : {}
+      })
+      return
+    }
+
+    res.send({
+      code: pushRes.code,
+      msg: pushRes.msg,
+      data: pushRes.data || {}
+    })
   } catch (error) {
     logger.error('pushMessage execute failed', error, {
       path: req.originalUrl || req.url,

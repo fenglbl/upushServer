@@ -1,14 +1,16 @@
 'use strict';
 const md5 = require('md5')
+const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
 // token有效期长度（单位ms）
 const tokenLong = 1000 * 60 * 60 * 24 * 365 * 100; // 默认100年
 const uniCloud = require('../../db/index.js');
 let time = new Date().getTime()
-exports.main = async (event, context) => {
+exports.main = async (event, context = {}) => {
   const ip = context.CLIENTIP
   const ua = context.CLIENTUA
   const deviceId = context.deviceId
   const appid = context.APPID
+  const actor = buildActorFromContext(context)
 	//event为客户端上传的参数
   const key = 'fenglbl.upush.'
   const pwd = md5(key + event.password)
@@ -85,6 +87,13 @@ exports.main = async (event, context) => {
       appid:appid
     })
     
+    auditSecurity('login_succeeded', {
+      result: 'success',
+      userId: userData._id,
+      username: event.username,
+      actor
+    })
+
     return {
       code:200,
       msg:"登录成功",
@@ -110,6 +119,13 @@ exports.main = async (event, context) => {
       mobile:"",
       appid:appid
     })
+    auditSecurity('login_failed', {
+      result: 'rejected',
+      reason: 'invalid_credentials',
+      username: event.username,
+      actor
+    })
+
     return {
       code:201,
       msg:"账号或密码错误",

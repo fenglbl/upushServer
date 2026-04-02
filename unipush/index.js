@@ -1,5 +1,6 @@
 const axios = require('axios');
 const crypto = require('crypto');
+const logger = require('../utils/logger')
 
 const fs = require('fs');
 const path = require('path');
@@ -109,14 +110,18 @@ class GeTui {
       if (response.data.code === 0) {
         const { token, expire_time } = response.data.data;
         this.saveTokenCache(token, parseInt(expire_time));
-        console.log('获取新token成功，过期时间:', new Date(parseInt(expire_time)));
+        logger.info('getui token refreshed', {
+          expireTime: parseInt(expire_time)
+        })
         return token;
-      } else {
-        throw new Error(`获取token失败: ${response.data.msg}`);
       }
+
+      throw new Error(`获取token失败: ${response.data.msg}`);
     } catch (error) {
-      console.error('获取个推token出错:', error.message);
-      // throw error;
+      logger.error('getui token fetch failed', error, {
+        serverUrl: config.serverUrl
+      })
+      throw error;
     }
   }
 }
@@ -132,49 +137,78 @@ class GeTui {
 //   .catch();
 const geTui = new GeTui()
 
-async function sendMessage(pushData) {
+function normalizeNotificationPayload(payload) {
+  if (payload == null) return ''
+  if (typeof payload === 'string') return payload
+
   try {
-    // 自动获取有效token
-    const token = await geTui.getValidToken();
-    
+    return JSON.stringify(payload)
+  } catch (error) {
+    logger.warn('getui payload stringify failed, fallback to empty string', {
+      errorMessage: error.message
+    })
+    return ''
+  }
+}
+
+async function sendMessage(pushData, options = {}) {
+  const retryOnTokenExpired = options.retryOnTokenExpired !== false
+
+  try {
+    const token = await geTui.getValidToken()
+
+    const notificationPayload = normalizeNotificationPayload(pushData.payload)
+
     const pushParams = {
-      "request_id": Date.now().toString(),
-      "audience": {
-        "cid": [
-          pushData.push_clientid
-        ]
+      request_id: Date.now().toString(),
+      audience: {
+        cid: [pushData.push_clientid]
       },
-      "push_message": {
-        "notification": {
-          "title":pushData.title || "",
-          "body":pushData.content || "",
-          "payload":pushData.payload ||  "",
-          "click_type": "startapp",
-          "channel_level": 4
+      push_message: {
+        notification: {
+          title: pushData.title || '',
+          body: pushData.content || '',
+          payload: notificationPayload,
+          click_type: 'startapp',
+          channel_level: 4
         }
       }
     }
-    console.log(pushParams);
     const response = await axios.post(
       `${config.serverUrl}/push/single/cid`,
       pushParams,
       {
         headers: {
           'Content-Type': 'application/json',
-          'token': token
+          token
         }
       }
-    );
-    return response.data;
+    )
+
+    logger.info('getui push request succeeded', {
+      pushClientId: pushData.push_clientid,
+      requestId: pushParams.request_id,
+      code: response.data && response.data.code,
+      msg: response.data && response.data.msg
+    })
+
+    return response.data
   } catch (error) {
-    // 如果token过期错误(10001)，尝试刷新一次token
-    if (error.response && error.response.data.code === 10001) {
-      console.log('token过期，尝试刷新后重新发送');
-      const newToken = await geTui.fetchNewToken();
-      return sendMessage(pushData); // 递归重试
+    const responseCode = error.response && error.response.data && error.response.data.code
+
+    if (retryOnTokenExpired && responseCode === 10001) {
+      logger.warn('getui token expired, retrying push once', {
+        pushClientId: pushData.push_clientid
+      })
+      await geTui.fetchNewToken()
+      return sendMessage(pushData, { retryOnTokenExpired: false })
     }
-    console.log(error.response.data);
-    // throw error;
+
+    logger.error('getui push request failed', error, {
+      pushClientId: pushData.push_clientid,
+      responseData: error.response && error.response.data ? error.response.data : null
+    })
+    throw error
   }
 }
 

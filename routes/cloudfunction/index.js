@@ -55,7 +55,13 @@ function createCloudfunctionRouter({ cloudfunctions }) {
         CLIENTIP: req.ip,
         CLIENTUA: req.headers['user-agent'],
         APPID: 'test',
-        deviceId: 'test'
+        deviceId: 'test',
+        request: {
+          method: req.method,
+          path: req.originalUrl || req.url,
+          ip: req.ip,
+          userAgent: req.headers['user-agent'] || ''
+        }
       })
 
       logger.info('cloudfunction executed', {

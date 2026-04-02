@@ -118,8 +118,17 @@ npm start
 ### `GET /pushMessage/:id`
 按目标 ID 提交推送消息。
 
+详细用法见：[`docs/push-message-api.md`](./docs/push-message-api.md)
+
 ### `POST /cloudfunction`
 按 `functionName` 调用后端云函数。
+
+其中消息列表云函数 `getPushMessage` 的详细说明见：[`docs/get-push-message-api.md`](./docs/get-push-message-api.md)
+
+### `GET /logs`
+查看日志文件并按日期、级别、关键词做基础筛选。
+
+详细用法见：[`docs/logs-api.md`](./docs/logs-api.md)
 
 ## 当前整理结果
 

@@ -1,81 +1,94 @@
 'use strict';
 const uniCloud = require('../../db/index.js');
-const tokenLong = 1000 * 60 * 60 * 24 * 365 * 100; // 默认100年
-exports.main = async (event, context) => {
-  //event为客户端上传的参数
-  const db = uniCloud.database();
-  const pushMsgDB = db.collection("uni-push-message")
-  const usersDB = db.collection("uni-id-users")
-  const tokenDB = db.collection("token")
-  // console.log(tokenDB);
-  const t = new Date().getTime()
-  // 判断token是否过期
+
+const tokenLong = 1000 * 60 * 60 * 24 * 365 * 100 // 默认100年
+
+function normalizePushMessage(item) {
+  if (!item || typeof item !== 'object') return item
+
+  const nextItem = {
+    ...item,
+    id: String(item._id || item.id || item.mid || '')
+  }
+
+  return nextItem
+}
+
+exports.main = async (event) => {
+  const db = uniCloud.database()
+  const pushMsgDB = db.collection('uni-push-message')
+  const usersDB = db.collection('uni-id-users')
+  const tokenDB = db.collection('token')
+  const now = Date.now()
+
   const userToken = await tokenDB.find({
     token: event.token
   }).toArray()
-  console.log(userToken);
+
   if (!userToken.length) {
     return {
       code: 202,
-      msg: "token不存在",
+      msg: 'token不存在',
       data: {}
     }
   }
-  let tokenCreateTime = userToken[0].addtime
-  if (tokenCreateTime + tokenLong < t) {
-    // 创建数据表token
+
+  const tokenCreateTime = userToken[0].addtime
+  if (tokenCreateTime + tokenLong < now) {
     return {
       code: 202,
-      msg: "token过期",
+      msg: 'token过期',
       data: []
     }
   }
+
   const user = await usersDB.find({
     token: event.token
   }).toArray()
+
   if (user.length) {
     const page = event.page || 1
     const pageSize = event.pageSize || 20
+    const skip = (page - 1) * pageSize
+    const userId = user[0]._id
 
-    // 计算跳过的文档数量
-    const skip = (page - 1) * pageSize;
-
-    let user_id = user[0]._id
-    console.log('event: ', event);
-    let msg = await pushMsgDB.find({
-        user_id: user_id,
-        device_id:event.device_id // 暂时注释设备id
-      }, {
-        projection: {
-          device_id: 0,
-          ip: 0,
-        },
-      })
+    const msg = await pushMsgDB.find({
+      user_id: userId,
+      device_id: event.device_id
+    }, {
+      projection: {
+        device_id: 0,
+        ip: 0
+      }
+    })
       .sort({
-        'create_time': -1
+        create_time: -1
       })
       .skip(skip)
       .limit(pageSize)
       .toArray()
+
     const total = await pushMsgDB.countDocuments({
-      user_id: user_id,
+      user_id: userId,
       device_id: event.device_id
     })
+
     const pageTotal = Math.ceil(total / pageSize)
+    const list = msg.map(normalizePushMessage)
 
     return {
       code: 200,
-      msg: "",
+      msg: '',
       data: {
-        list: msg,
+        list,
         total: pageTotal
-      },
+      }
     }
   }
-  //返回数据给客户端
+
   return {
     code: 202,
-    msg: "token异常",
+    msg: 'token异常',
     data: []
   }
-};
+}

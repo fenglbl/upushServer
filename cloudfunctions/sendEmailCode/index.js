@@ -8,15 +8,25 @@ const {
   checkEmailCodeSendRateLimit,
   saveEmailCode
 } = require('../../utils/emailCode.js')
+const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
 
 const ALLOWED_SCENES = new Set(['register', 'update_email', 'verify_old_email', 'verify_new_email'])
 
-exports.main = async (event) => {
+exports.main = async (event, context = {}) => {
   const db = uniCloud.database()
   const email = (event.email || '').trim().toLowerCase()
   const scene = (event.scene || 'register').trim()
+  const actor = buildActorFromContext(context)
 
   if (!email) {
+    auditSecurity('email_code_send_rejected', {
+      result: 'rejected',
+      reason: 'email_required',
+      scene,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '邮箱不能为空',
@@ -26,6 +36,14 @@ exports.main = async (event) => {
 
   const emailReg = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
   if (!emailReg.test(email)) {
+    auditSecurity('email_code_send_rejected', {
+      result: 'rejected',
+      reason: 'email_invalid',
+      scene,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '邮箱格式不正确',
@@ -34,6 +52,14 @@ exports.main = async (event) => {
   }
 
   if (!ALLOWED_SCENES.has(scene)) {
+    auditSecurity('email_code_send_rejected', {
+      result: 'rejected',
+      reason: 'unsupported_scene',
+      scene,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '不支持的验证码场景',
@@ -42,6 +68,14 @@ exports.main = async (event) => {
   }
 
   if (!process.env.RESEND_API_KEY || !process.env.RESEND_FROM_EMAIL) {
+    auditSecurity('email_code_send_rejected', {
+      result: 'rejected',
+      reason: 'email_service_not_configured',
+      scene,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '邮件服务未配置',
@@ -51,6 +85,15 @@ exports.main = async (event) => {
 
   const rateLimitResult = await checkEmailCodeSendRateLimit(db, { email, scene })
   if (!rateLimitResult.allowed) {
+    auditSecurity('email_code_send_rate_limited', {
+      result: 'rejected',
+      reason: 'rate_limited',
+      scene,
+      email,
+      retryAfterSeconds: rateLimitResult.retryAfterSeconds || 0,
+      actor
+    })
+
     return {
       code: 429,
       msg: rateLimitResult.message,
@@ -71,6 +114,13 @@ exports.main = async (event) => {
     to: email,
     subject: 'UPUSH 邮箱验证码',
     html: `<div><h2>UPUSH 邮箱验证码</h2><p>你的验证码是：<strong style="font-size:20px;">${code}</strong></p><p>验证码 ${CODE_EXPIRE_MINUTES} 分钟内有效。</p></div>`
+  })
+
+  auditSecurity('email_code_sent', {
+    result: 'success',
+    scene,
+    email,
+    actor
   })
 
   return {

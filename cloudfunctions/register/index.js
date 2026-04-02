@@ -3,9 +3,11 @@
 const md5 = require('md5')
 const uniCloud = require('../../db/index.js')
 const { verifyEmailCode } = require('../../utils/emailCode.js')
+const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
 
-exports.main = async (event) => {
+exports.main = async (event, context = {}) => {
   const db = uniCloud.database()
+  const actor = buildActorFromContext(context)
   const usersDB = db.collection('uni-id-users')
   const t = Date.now()
   const key = 'fenglbl.upush.'
@@ -14,6 +16,14 @@ exports.main = async (event) => {
   const password = event.password || ''
 
   if (!username) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'username_required',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '账号不能为空',
@@ -22,6 +32,14 @@ exports.main = async (event) => {
   }
 
   if (!password) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'password_required',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '密码不能为空',
@@ -30,6 +48,14 @@ exports.main = async (event) => {
   }
 
   if (password.length < 6) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'password_too_short',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '密码至少 6 位',
@@ -38,6 +64,14 @@ exports.main = async (event) => {
   }
 
   if (!email) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'email_required',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '邮箱不能为空',
@@ -47,6 +81,14 @@ exports.main = async (event) => {
 
   const emailReg = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
   if (!emailReg.test(email)) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'email_invalid',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '邮箱格式不正确',
@@ -56,6 +98,14 @@ exports.main = async (event) => {
 
   const exists = await usersDB.find({ username }).toArray()
   if (exists.length) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'username_exists',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '账号已存在',
@@ -65,6 +115,14 @@ exports.main = async (event) => {
 
   const emailExists = await usersDB.find({ email }).toArray()
   if (emailExists.length) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: 'email_exists',
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: '邮箱已存在',
@@ -78,6 +136,14 @@ exports.main = async (event) => {
     scene: 'register'
   })
   if (!verifyResult.valid) {
+    auditSecurity('register_failed', {
+      result: 'rejected',
+      reason: verifyResult.message,
+      username,
+      email,
+      actor
+    })
+
     return {
       code: 201,
       msg: verifyResult.message,
@@ -95,6 +161,13 @@ exports.main = async (event) => {
     register_date: t,
     nickname: username,
     status: 0
+  })
+
+  auditSecurity('register_succeeded', {
+    result: 'success',
+    username,
+    email,
+    actor
   })
 
   return {

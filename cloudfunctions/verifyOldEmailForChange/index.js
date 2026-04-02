@@ -2,13 +2,15 @@
 
 const uniCloud = require('../../db/index.js')
 const { verifyEmailCode } = require('../../utils/emailCode.js')
+const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
 
 function createChangeEmailToken() {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`
 }
 
-exports.main = async (event) => {
+exports.main = async (event, context = {}) => {
   const db = uniCloud.database()
+  const actor = buildActorFromContext(context)
   const tokenDB = db.collection('token')
   const usersDB = db.collection('uni-id-users')
   const changeSessionDB = db.collection('app_email_change_session')
@@ -17,6 +19,13 @@ exports.main = async (event) => {
   const token = event.token || ''
 
   if (!token) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: 'token_required',
+      oldEmail,
+      actor
+    })
+
     return {
       code: 202,
       msg: '请先登录',
@@ -25,6 +34,13 @@ exports.main = async (event) => {
   }
 
   if (!oldEmail) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: 'old_email_required',
+      oldEmail,
+      actor
+    })
+
     return {
       code: 201,
       msg: '旧邮箱不能为空',
@@ -33,6 +49,13 @@ exports.main = async (event) => {
   }
 
   if (!oldEmailCode) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: 'old_email_code_required',
+      oldEmail,
+      actor
+    })
+
     return {
       code: 201,
       msg: '请输入旧邮箱验证码',
@@ -42,6 +65,13 @@ exports.main = async (event) => {
 
   const tokenInfo = await tokenDB.find({ token }).toArray()
   if (!tokenInfo.length) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: 'token_invalid',
+      oldEmail,
+      actor
+    })
+
     return {
       code: 202,
       msg: '登录已失效',
@@ -55,6 +85,14 @@ exports.main = async (event) => {
   const currentEmail = (user.email || '').trim().toLowerCase()
 
   if (!currentEmail) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: 'current_email_missing',
+      userId,
+      oldEmail,
+      actor
+    })
+
     return {
       code: 201,
       msg: '当前账号未绑定旧邮箱，暂不支持此修改方式',
@@ -63,6 +101,15 @@ exports.main = async (event) => {
   }
 
   if (oldEmail !== currentEmail) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: 'old_email_mismatch',
+      userId,
+      oldEmail,
+      currentEmail,
+      actor
+    })
+
     return {
       code: 201,
       msg: '旧邮箱与当前绑定邮箱不一致',
@@ -77,6 +124,14 @@ exports.main = async (event) => {
   })
 
   if (!verifyResult.valid) {
+    auditSecurity('verify_old_email_for_change_failed', {
+      result: 'rejected',
+      reason: verifyResult.message,
+      userId,
+      oldEmail,
+      actor
+    })
+
     return {
       code: 201,
       msg: `旧邮箱验证失败：${verifyResult.message}`,
@@ -106,6 +161,13 @@ exports.main = async (event) => {
     expire_time: expireTime,
     create_date: now,
     update_date: now
+  })
+
+  auditSecurity('verify_old_email_for_change_succeeded', {
+    result: 'success',
+    userId,
+    oldEmail,
+    actor
   })
 
   return {
