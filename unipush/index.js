@@ -151,6 +151,28 @@ function normalizeNotificationPayload(payload) {
   }
 }
 
+function normalizeNotificationBody(content, maxLength = 200) {
+  if (content == null) return ''
+
+  const text = String(content)
+  if (text.length <= maxLength) {
+    return text
+  }
+
+  return text.slice(0, maxLength)
+}
+
+function normalizeNotificationTitle(title, maxLength = 100) {
+  if (title == null) return ''
+
+  const text = String(title)
+  if (text.length <= maxLength) {
+    return text
+  }
+
+  return text.slice(0, maxLength)
+}
+
 async function sendMessage(pushData, options = {}) {
   const retryOnTokenExpired = options.retryOnTokenExpired !== false
 
@@ -158,6 +180,24 @@ async function sendMessage(pushData, options = {}) {
     const token = await geTui.getValidToken()
 
     const notificationPayload = normalizeNotificationPayload(pushData.payload)
+    const notificationBody = normalizeNotificationBody(pushData.content)
+    const notificationTitle = normalizeNotificationTitle(pushData.title)
+
+    if (String(pushData.title || '').length > notificationTitle.length) {
+      logger.warn('getui notification title truncated', {
+        pushClientId: pushData.push_clientid,
+        originalLength: String(pushData.title || '').length,
+        truncatedLength: notificationTitle.length
+      })
+    }
+
+    if (String(pushData.content || '').length > notificationBody.length) {
+      logger.warn('getui notification body truncated', {
+        pushClientId: pushData.push_clientid,
+        originalLength: String(pushData.content || '').length,
+        truncatedLength: notificationBody.length
+      })
+    }
 
     const pushParams = {
       request_id: Date.now().toString(),
@@ -166,8 +206,8 @@ async function sendMessage(pushData, options = {}) {
       },
       push_message: {
         notification: {
-          title: pushData.title || '',
-          body: pushData.content || '',
+          title: notificationTitle,
+          body: notificationBody,
           payload: notificationPayload,
           click_type: 'startapp',
           channel_level: 4
