@@ -12,6 +12,7 @@ const requestLogger = require('./utils/requestLogger')
 const createPushMessageRouter = require('./routes/pushMessage')
 const createCloudfunctionRouter = require('./routes/cloudfunction')
 const createLogsRouter = require('./routes/logs')
+const createAdminRouter = require('./routes/admin')
 const WebSocketServerManager = require('./websocket')
 
 // 云函数目录，服务启动时会自动扫描并加载每个云函数入口
@@ -56,6 +57,9 @@ app.use('/cloudfunction', createCloudfunctionRouter({ cloudfunctions }))
 
 // 日志查看接口：支持按日期、级别、关键词做基础筛选
 app.use('/logs', createLogsRouter())
+
+// admin 首页聚合接口：为 upush-admin 首页提供 summary / trend / recent 列表
+app.use('/admin', createAdminRouter())
 
 // 健康检查接口：用于快速确认服务和数据库是否正常
 app.get('/health', async (req, res) => {
