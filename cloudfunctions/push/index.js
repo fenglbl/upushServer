@@ -3,6 +3,8 @@ const uniCloud = require('../../db/index.js');
 const unipush = require('../../unipush/index.js')
 const logger = require('../../utils/logger')
 
+const PUSH_BATCH_COLLECTION = 'admin-push-batches'
+
 function normalizePayload(payload) {
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     return { ...payload }
@@ -37,6 +39,8 @@ exports.main = async (event, context = {}) => {
   const db = uniCloud.database()
   const deviceDB = db.collection('uni-id-device')
   const pushMsgDB = db.collection('uni-push-message')
+  const pushBatchDB = db.collection(PUSH_BATCH_COLLECTION)
+  const requestTime = Date.now()
 
   if (!id) {
     return {
@@ -75,10 +79,30 @@ exports.main = async (event, context = {}) => {
       userId: id,
       ip
     })
+
+    const batchDoc = {
+      user_id: userId,
+      title,
+      content: content || '',
+      payload: normalizePayload(payload),
+      ip,
+      create_time: requestTime,
+      total_devices: 0,
+      success_count: 0,
+      failure_count: 0,
+      result_code: 404,
+      result_msg: '目标用户没有可用设备',
+      status: 'no_device',
+      results: []
+    }
+
+    const insertBatchRes = await pushBatchDB.insertOne(batchDoc)
+
     return {
       code: 404,
       msg: '目标用户没有可用设备',
       data: {
+        batchId: String(insertBatchRes.insertedId),
         totalDevices: 0,
         successCount: 0,
         failureCount: 0,
@@ -89,8 +113,28 @@ exports.main = async (event, context = {}) => {
 
   const normalizedPayload = normalizePayload(payload)
 
+  const batchSeed = {
+    user_id: userId,
+    title,
+    content: content || '',
+    payload: normalizedPayload,
+    ip,
+    create_time: requestTime,
+    total_devices: devices.length,
+    success_count: 0,
+    failure_count: 0,
+    result_code: 0,
+    result_msg: '',
+    status: 'processing',
+    results: []
+  }
+
+  const batchInsertRes = await pushBatchDB.insertOne(batchSeed)
+  const batchId = batchInsertRes.insertedId
+
   const results = await Promise.all(devices.map(async (item) => {
     const t = Date.now()
+    let insertedMessageId = null
 
     try {
       const insertData = await pushMsgDB.insertOne({
@@ -100,9 +144,12 @@ exports.main = async (event, context = {}) => {
         create_time: t,
         title,
         content: content || '',
-        payload: normalizedPayload
+        payload: normalizedPayload,
+        batch_id: batchId,
+        send_status: 'pending'
       })
 
+      insertedMessageId = insertData.insertedId
       const pushPayload = buildPushPayload(normalizedPayload, insertData.insertedId)
 
       const pushResponse = await unipush.sendMessage({
@@ -110,6 +157,15 @@ exports.main = async (event, context = {}) => {
         title,
         content,
         payload: pushPayload
+      })
+
+      await pushMsgDB.updateOne({ _id: insertData.insertedId }, {
+        $set: {
+          payload: pushPayload,
+          send_status: 'success',
+          provider_response: pushResponse || null,
+          sent_at: Date.now()
+        }
       })
 
       return {
@@ -127,11 +183,24 @@ exports.main = async (event, context = {}) => {
       })
 
       const providerResponse = error.response && error.response.data ? error.response.data : null
+      const failureMessage = error.message || 'push failed'
+
+      if (insertedMessageId) {
+        await pushMsgDB.updateOne({ _id: insertedMessageId }, {
+          $set: {
+            send_status: 'failed',
+            provider_response: providerResponse,
+            error_message: failureMessage,
+            sent_at: Date.now()
+          }
+        })
+      }
 
       return {
         ok: false,
         deviceId: item.device_id,
-        error: error.message || 'push failed',
+        messageId: insertedMessageId ? String(insertedMessageId) : '',
+        error: failureMessage,
         providerCode: providerResponse && providerResponse.code ? providerResponse.code : null,
         providerMsg: providerResponse && providerResponse.msg ? providerResponse.msg : null,
         providerResponse
@@ -147,26 +216,41 @@ exports.main = async (event, context = {}) => {
     totalDevices: devices.length,
     successCount,
     failureCount,
-    ip
+    ip,
+    batchId: String(batchId)
   })
 
+  let code = 200
+  let msg = '推送请求已提交'
+  let status = 'success'
+
   if (!successCount) {
-    return {
-      code: 500,
-      msg: '推送失败',
-      data: {
-        totalDevices: devices.length,
-        successCount,
-        failureCount,
-        results
-      }
-    }
+    code = 500
+    msg = '推送失败'
+    status = 'failed'
+  } else if (failureCount) {
+    code = 207
+    msg = '部分设备推送失败'
+    status = 'partial'
   }
 
+  await pushBatchDB.updateOne({ _id: batchId }, {
+    $set: {
+      success_count: successCount,
+      failure_count: failureCount,
+      result_code: code,
+      result_msg: msg,
+      status,
+      results,
+      updated_at: Date.now()
+    }
+  })
+
   return {
-    code: failureCount ? 207 : 200,
-    msg: failureCount ? '部分设备推送失败' : '推送请求已提交',
+    code,
+    msg,
     data: {
+      batchId: String(batchId),
       totalDevices: devices.length,
       successCount,
       failureCount,
