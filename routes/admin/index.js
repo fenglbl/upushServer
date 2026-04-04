@@ -4,6 +4,9 @@ const logger = require('../../utils/logger')
 
 const RANGE_SET = new Set(['7d', '30d', '24h'])
 const PUSH_BATCH_COLLECTION = 'admin-push-batches'
+const ADMIN_SETTINGS_COLLECTION = 'admin-settings'
+const ADMIN_SETTINGS_KEY = 'default'
+const FEEDBACK_COLLECTION = 'app_feedback'
 
 function pad(num) {
   return String(num).padStart(2, '0')
@@ -374,6 +377,182 @@ function buildDeviceQuery(req) {
     query,
     keyword,
     userId
+  }
+}
+
+function createDefaultAdminSettings() {
+  return {
+    push: {
+      defaultRange: '7d',
+      defaultTargetMode: 'user',
+      defaultPayloadTemplate: 'default',
+      autoOpenBatchDetail: true
+    },
+    logs: {
+      defaultLevel: '',
+      defaultLimit: 100,
+      defaultOrder: 'desc',
+      keepQueryInUrl: true
+    },
+    ui: {
+      appName: 'UPUSH Admin',
+      theme: 'light',
+      showQuickActions: true,
+      compactTable: false
+    }
+  }
+}
+
+function normalizeAdminSettingsPayload(payload) {
+  const source = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload
+    : {}
+
+  const push = source.push && typeof source.push === 'object' && !Array.isArray(source.push)
+    ? source.push
+    : {}
+  const logs = source.logs && typeof source.logs === 'object' && !Array.isArray(source.logs)
+    ? source.logs
+    : {}
+  const ui = source.ui && typeof source.ui === 'object' && !Array.isArray(source.ui)
+    ? source.ui
+    : {}
+
+  const range = normalizeRange(push.defaultRange)
+  const targetMode = ['user', 'group', 'all'].includes(String(push.defaultTargetMode || '').trim())
+    ? String(push.defaultTargetMode).trim()
+    : 'user'
+  const payloadTemplate = ['default', 'simple', 'system_notice'].includes(String(push.defaultPayloadTemplate || '').trim())
+    ? String(push.defaultPayloadTemplate).trim()
+    : 'default'
+
+  const level = ['', 'INFO', 'WARN', 'ERROR'].includes(String(logs.defaultLevel || '').trim().toUpperCase())
+    ? String(logs.defaultLevel || '').trim().toUpperCase()
+    : ''
+  const limit = Math.min(500, Math.max(1, Number(logs.defaultLimit || 100) || 100))
+  const order = String(logs.defaultOrder || 'desc').trim().toLowerCase() === 'asc' ? 'asc' : 'desc'
+
+  const theme = ['light', 'dark', 'system'].includes(String(ui.theme || '').trim().toLowerCase())
+    ? String(ui.theme).trim().toLowerCase()
+    : 'light'
+  const appName = String(ui.appName || 'UPUSH Admin').trim() || 'UPUSH Admin'
+
+  return {
+    push: {
+      defaultRange: range,
+      defaultTargetMode: targetMode,
+      defaultPayloadTemplate: payloadTemplate,
+      autoOpenBatchDetail: Boolean(push.autoOpenBatchDetail)
+    },
+    logs: {
+      defaultLevel: level,
+      defaultLimit: limit,
+      defaultOrder: order,
+      keepQueryInUrl: Boolean(logs.keepQueryInUrl)
+    },
+    ui: {
+      appName,
+      theme,
+      showQuickActions: Boolean(ui.showQuickActions),
+      compactTable: Boolean(ui.compactTable)
+    }
+  }
+}
+
+function normalizeAdminSettingsDoc(doc) {
+  const defaults = createDefaultAdminSettings()
+  const normalized = normalizeAdminSettingsPayload(doc || defaults)
+
+  return {
+    ...normalized,
+    meta: {
+      key: String(doc?.key || ADMIN_SETTINGS_KEY),
+      updatedAt: Number(doc?.updated_at || 0),
+      updatedAtText: doc?.updated_at ? new Date(doc.updated_at).toLocaleString('zh-CN', { hour12: false }) : '',
+      createdAt: Number(doc?.create_time || 0),
+      createdAtText: doc?.create_time ? new Date(doc.create_time).toLocaleString('zh-CN', { hour12: false }) : ''
+    }
+  }
+}
+
+async function getOrCreateAdminSettings(collection) {
+  let doc = await collection.findOne({ key: ADMIN_SETTINGS_KEY })
+
+  if (!doc) {
+    const now = Date.now()
+    const settings = createDefaultAdminSettings()
+    doc = {
+      key: ADMIN_SETTINGS_KEY,
+      ...settings,
+      create_time: now,
+      updated_at: now
+    }
+    await collection.insertOne(doc)
+  }
+
+  return doc
+}
+
+function normalizeReplyStatus(value) {
+  const num = Number(value)
+  return num === 1 ? 1 : 0
+}
+
+function normalizeFeedbackType(value) {
+  const type = String(value || 'all').trim().toLowerCase()
+  const allow = new Set(['all', 'bug', 'suggestion', 'other'])
+  return allow.has(type) ? type : 'all'
+}
+
+function normalizeFeedbackRecord(doc) {
+  return {
+    id: String(doc._id || ''),
+    type: doc.type || 'other',
+    contact: doc.contact || '',
+    content: doc.content || '',
+    screenshots: Array.isArray(doc.screenshots) ? doc.screenshots : [],
+    replyStatus: Number(doc.reply_status || 0),
+    replyContent: doc.reply_content || '',
+    replyTime: Number(doc.reply_time || 0),
+    replyTimeText: doc.reply_time ? new Date(doc.reply_time).toLocaleString('zh-CN', { hour12: false }) : '',
+    status: Number(doc.status || 0),
+    createDate: Number(doc.create_date || 0),
+    createDateText: doc.create_date ? new Date(doc.create_date).toLocaleString('zh-CN', { hour12: false }) : ''
+  }
+}
+
+function buildFeedbackQuery(req) {
+  const keyword = normalizeKeyword(req.query.keyword)
+  const type = normalizeFeedbackType(req.query.type)
+  const replyStatus = String(req.query.replyStatus || 'all').trim().toLowerCase()
+  const query = {
+    status: 1
+  }
+
+  if (type !== 'all') {
+    query.type = type
+  }
+
+  if (replyStatus !== 'all' && replyStatus !== '') {
+    const parsed = Number(replyStatus)
+    if (parsed === 0 || parsed === 1) {
+      query.reply_status = parsed
+    }
+  }
+
+  if (keyword) {
+    query.$or = [
+      { content: { $regex: keyword, $options: 'i' } },
+      { contact: { $regex: keyword, $options: 'i' } },
+      { reply_content: { $regex: keyword, $options: 'i' } }
+    ]
+  }
+
+  return {
+    query,
+    keyword,
+    type,
+    replyStatus: replyStatus || 'all'
   }
 }
 
@@ -811,6 +990,245 @@ function createAdminRouter() {
       res.status(500).send({
         code: 500,
         msg: '设备详情查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/settings', async (req, res) => {
+    try {
+      const database = db.database()
+      const collection = database.collection(ADMIN_SETTINGS_COLLECTION)
+      const doc = await getOrCreateAdminSettings(collection)
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: normalizeAdminSettingsDoc(doc)
+      })
+    } catch (error) {
+      logger.error('admin settings query failed', error, {
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '系统设置查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/settings', async (req, res) => {
+    try {
+      const database = db.database()
+      const collection = database.collection(ADMIN_SETTINGS_COLLECTION)
+      const previousDoc = await getOrCreateAdminSettings(collection)
+      const normalizedSettings = normalizeAdminSettingsPayload(req.body)
+      const now = Date.now()
+
+      await collection.updateOne(
+        { key: ADMIN_SETTINGS_KEY },
+        {
+          $set: {
+            ...normalizedSettings,
+            updated_at: now
+          },
+          $setOnInsert: {
+            key: ADMIN_SETTINGS_KEY,
+            create_time: previousDoc?.create_time || now
+          }
+        },
+        { upsert: true }
+      )
+
+      const nextDoc = await collection.findOne({ key: ADMIN_SETTINGS_KEY })
+
+      logger.info('admin settings updated', {
+        path: req.originalUrl || req.url,
+        key: ADMIN_SETTINGS_KEY
+      })
+
+      res.send({
+        code: 200,
+        msg: '系统设置保存成功',
+        data: normalizeAdminSettingsDoc(nextDoc)
+      })
+    } catch (error) {
+      logger.error('admin settings update failed', error, {
+        path: req.originalUrl || req.url,
+        body: req.body
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '系统设置保存失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/feedback', async (req, res) => {
+    const { page, pageSize } = normalizePagination(req)
+    const { query, keyword, type, replyStatus } = buildFeedbackQuery(req)
+
+    try {
+      const database = db.database()
+      const collection = database.collection(FEEDBACK_COLLECTION)
+
+      const [total, docs] = await Promise.all([
+        collection.countDocuments(query),
+        collection.find(query)
+          .sort({ create_date: -1, _id: -1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray()
+      ])
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: {
+          list: docs.map(normalizeFeedbackRecord),
+          total,
+          page,
+          pageSize,
+          meta: {
+            keyword,
+            type,
+            replyStatus
+          }
+        }
+      })
+    } catch (error) {
+      logger.error('admin feedback list query failed', error, {
+        query,
+        page,
+        pageSize,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '反馈列表查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/feedback/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(FEEDBACK_COLLECTION)
+      const doc = await collection.findOne({ _id: objectId, status: 1 })
+
+      if (!doc) {
+        res.status(404).send({ code: 404, msg: '反馈不存在' })
+        return
+      }
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: normalizeFeedbackRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin feedback detail query failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '反馈详情查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/feedback/:id/reply', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    const replyContent = String(req.body?.replyContent || '').trim()
+    const replyStatus = normalizeReplyStatus(req.body?.replyStatus)
+
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    if (!replyContent) {
+      res.status(400).send({ code: 400, msg: '回复内容不能为空' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(FEEDBACK_COLLECTION)
+      const now = Date.now()
+
+      const result = await collection.findOneAndUpdate(
+        { _id: objectId, status: 1 },
+        {
+          $set: {
+            reply_status: replyStatus,
+            reply_content: replyContent,
+            reply_time: now
+          }
+        },
+        {
+          returnDocument: 'after'
+        }
+      )
+
+      const doc = result?.value || result
+      if (!doc) {
+        res.status(404).send({ code: 404, msg: '反馈不存在' })
+        return
+      }
+
+      logger.info('admin feedback replied', {
+        id,
+        path: req.originalUrl || req.url,
+        replyStatus
+      })
+
+      res.send({
+        code: 200,
+        msg: '反馈回复已保存',
+        data: normalizeFeedbackRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin feedback reply failed', error, {
+        id,
+        path: req.originalUrl || req.url,
+        body: req.body
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '反馈回复保存失败',
         error: error.message || 'unknown error'
       })
     }
