@@ -279,7 +279,9 @@ function buildBatchQuery(req) {
     query.$or = [
       { title: { $regex: keyword, $options: 'i' } },
       { content: { $regex: keyword, $options: 'i' } },
-      { result_msg: { $regex: keyword, $options: 'i' } }
+      { result_msg: { $regex: keyword, $options: 'i' } },
+      { 'results.providerMsg': { $regex: keyword, $options: 'i' } },
+      { 'results.error': { $regex: keyword, $options: 'i' } }
     ]
   }
 
