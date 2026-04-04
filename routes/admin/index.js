@@ -221,6 +221,76 @@ async function queryTrend(batchCollection, range, startMs) {
   return buildTrend(range, statsMap)
 }
 
+function normalizePagination(req) {
+  const page = Math.max(1, Number(req.query.page || 1) || 1)
+  const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize || 20) || 20))
+  return { page, pageSize }
+}
+
+function normalizeKeyword(value) {
+  return String(value || '').trim()
+}
+
+function normalizeStatus(value) {
+  const status = String(value || 'all').trim().toLowerCase()
+  const allow = new Set(['all', 'success', 'partial', 'failed', 'no_device'])
+  return allow.has(status) ? status : 'all'
+}
+
+function normalizeBatchDetail(doc) {
+  if (!doc) return null
+
+  return {
+    id: String(doc._id || ''),
+    userId: String(doc.user_id || ''),
+    title: doc.title || '未命名推送',
+    content: doc.content || '',
+    payload: doc.payload || {},
+    createTime: Number(doc.create_time || 0),
+    createTimeText: doc.create_time ? new Date(doc.create_time).toLocaleString('zh-CN', { hour12: false }) : '',
+    updatedAt: Number(doc.updated_at || 0),
+    updatedAtText: doc.updated_at ? new Date(doc.updated_at).toLocaleString('zh-CN', { hour12: false }) : '',
+    status: doc.status || 'unknown',
+    resultCode: Number(doc.result_code || 0),
+    resultMsg: doc.result_msg || '',
+    totalDevices: Number(doc.total_devices || 0),
+    successCount: Number(doc.success_count || 0),
+    failureCount: Number(doc.failure_count || 0),
+    ip: doc.ip || '',
+    results: Array.isArray(doc.results) ? doc.results : []
+  }
+}
+
+function buildBatchQuery(req) {
+  const range = normalizeRange(req.query.range)
+  const startMs = getRangeStartMs(range)
+  const status = normalizeStatus(req.query.status)
+  const keyword = normalizeKeyword(req.query.keyword)
+
+  const query = {
+    create_time: { $gte: startMs }
+  }
+
+  if (status !== 'all') {
+    query.status = status
+  }
+
+  if (keyword) {
+    query.$or = [
+      { title: { $regex: keyword, $options: 'i' } },
+      { content: { $regex: keyword, $options: 'i' } },
+      { result_msg: { $regex: keyword, $options: 'i' } }
+    ]
+  }
+
+  return {
+    query,
+    range,
+    status,
+    keyword
+  }
+}
+
 function createAdminRouter() {
   const router = express.Router()
 
@@ -289,6 +359,108 @@ function createAdminRouter() {
       res.status(500).send({
         code: 500,
         msg: 'dashboard 查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/push-batches', async (req, res) => {
+    const { page, pageSize } = normalizePagination(req)
+    const { query, range, status, keyword } = buildBatchQuery(req)
+
+    try {
+      const database = db.database()
+      const batchCollection = database.collection(PUSH_BATCH_COLLECTION)
+
+      const [total, docs] = await Promise.all([
+        batchCollection.countDocuments(query),
+        batchCollection.find(query)
+          .sort({ create_time: -1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray()
+      ])
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: {
+          list: docs.map(normalizeBatchRecord),
+          total,
+          page,
+          pageSize,
+          meta: {
+            range,
+            status,
+            keyword
+          }
+        }
+      })
+    } catch (error) {
+      logger.error('admin push batches query failed', error, {
+        query,
+        page,
+        pageSize,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '推送批次查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/push-batches/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+
+    if (!id) {
+      res.status(400).send({
+        code: 400,
+        msg: 'id 不能为空'
+      })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({
+        code: 400,
+        msg: 'id 格式错误'
+      })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const batchCollection = database.collection(PUSH_BATCH_COLLECTION)
+      const doc = await batchCollection.findOne({ _id: objectId })
+
+      if (!doc) {
+        res.status(404).send({
+          code: 404,
+          msg: '批次不存在'
+        })
+        return
+      }
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: normalizeBatchDetail(doc)
+      })
+    } catch (error) {
+      logger.error('admin push batch detail query failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '推送批次详情查询失败',
         error: error.message || 'unknown error'
       })
     }
