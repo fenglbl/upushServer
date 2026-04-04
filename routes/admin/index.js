@@ -7,6 +7,8 @@ const PUSH_BATCH_COLLECTION = 'admin-push-batches'
 const ADMIN_SETTINGS_COLLECTION = 'admin-settings'
 const ADMIN_SETTINGS_KEY = 'default'
 const FEEDBACK_COLLECTION = 'app_feedback'
+const AGREEMENT_COLLECTION = 'app_agreement'
+const VERSION_COLLECTION = 'app_version'
 
 function pad(num) {
   return String(num).padStart(2, '0')
@@ -185,7 +187,8 @@ async function queryTrend(batchCollection, range, startMs) {
         bucket: {
           $dateToString: {
             format,
-            date: { $toDate: '$create_time' }
+            date: { $toDate: '$create_time' },
+            timezone: 'Asia/Shanghai'
           }
         },
         status: 1
@@ -553,6 +556,127 @@ function buildFeedbackQuery(req) {
     keyword,
     type,
     replyStatus: replyStatus || 'all'
+  }
+}
+
+function normalizeAgreementStatus(value) {
+  const num = Number(value)
+  return num === 1 ? 1 : 0
+}
+
+function normalizeAgreementId(value) {
+  const next = String(value || '').trim().toLowerCase()
+  return next
+}
+
+function normalizeAgreementRecord(doc) {
+  return {
+    id: String(doc._id || ''),
+    agreementId: doc.agreement_id || '',
+    title: doc.title || '',
+    content: doc.content || '',
+    publishTime: Number(doc.publish_time || 0),
+    publishTimeText: doc.publish_time ? new Date(doc.publish_time).toLocaleString('zh-CN', { hour12: false }) : '',
+    status: Number(doc.status || 0),
+    createDate: Number(doc.create_date || 0),
+    createDateText: doc.create_date ? new Date(doc.create_date).toLocaleString('zh-CN', { hour12: false }) : '',
+    updateTime: Number(doc.update_time || 0),
+    updateTimeText: doc.update_time ? new Date(doc.update_time).toLocaleString('zh-CN', { hour12: false }) : ''
+  }
+}
+
+function buildAgreementQuery(req) {
+  const keyword = normalizeKeyword(req.query.keyword)
+  const agreementId = normalizeAgreementId(req.query.agreementId || req.query.agreement_id)
+  const statusValue = String(req.query.status || 'all').trim().toLowerCase()
+  const query = {}
+
+  if (agreementId && agreementId !== 'all') {
+    query.agreement_id = agreementId
+  }
+
+  if (statusValue !== 'all' && statusValue !== '') {
+    const parsed = Number(statusValue)
+    if (parsed === 0 || parsed === 1) {
+      query.status = parsed
+    }
+  }
+
+  if (keyword) {
+    query.$or = [
+      { title: { $regex: keyword, $options: 'i' } },
+      { content: { $regex: keyword, $options: 'i' } },
+      { agreement_id: { $regex: keyword, $options: 'i' } }
+    ]
+  }
+
+  return {
+    query,
+    keyword,
+    agreementId: agreementId || 'all',
+    status: statusValue || 'all'
+  }
+}
+
+function normalizeVersionStatus(value) {
+  const num = Number(value)
+  return num === 1 ? 1 : 0
+}
+
+function normalizeVersionPlatform(value) {
+  const next = String(value || 'app').trim().toLowerCase()
+  return next || 'app'
+}
+
+function normalizeVersionRecord(doc) {
+  return {
+    id: String(doc._id || ''),
+    platform: doc.platform || 'app',
+    versionName: doc.version_name || '',
+    versionCode: Number(doc.version_code || 0),
+    status: Number(doc.status || 0),
+    forceUpdate: !!doc.force_update,
+    downloadUrl: doc.download_url || '',
+    notes: doc.notes || '',
+    createDate: Number(doc.create_date || 0),
+    createDateText: doc.create_date ? new Date(doc.create_date).toLocaleString('zh-CN', { hour12: false }) : '',
+    updateTime: Number(doc.update_time || 0),
+    updateTimeText: doc.update_time ? new Date(doc.update_time).toLocaleString('zh-CN', { hour12: false }) : '',
+    publishTime: Number(doc.publish_time || 0),
+    publishTimeText: doc.publish_time ? new Date(doc.publish_time).toLocaleString('zh-CN', { hour12: false }) : ''
+  }
+}
+
+function buildVersionQuery(req) {
+  const keyword = normalizeKeyword(req.query.keyword)
+  const platform = normalizeVersionPlatform(req.query.platform)
+  const statusValue = String(req.query.status || 'all').trim().toLowerCase()
+  const query = {}
+
+  if (platform && platform !== 'all') {
+    query.platform = platform
+  }
+
+  if (statusValue !== 'all' && statusValue !== '') {
+    const parsed = Number(statusValue)
+    if (parsed === 0 || parsed === 1) {
+      query.status = parsed
+    }
+  }
+
+  if (keyword) {
+    query.$or = [
+      { version_name: { $regex: keyword, $options: 'i' } },
+      { notes: { $regex: keyword, $options: 'i' } },
+      { download_url: { $regex: keyword, $options: 'i' } }
+    ]
+  }
+
+  return {
+    query,
+    keyword,
+    platform: platform || 'all',
+    status: statusValue || 'all'
   }
 }
 
@@ -1229,6 +1353,574 @@ function createAdminRouter() {
       res.status(500).send({
         code: 500,
         msg: '反馈回复保存失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/agreements', async (req, res) => {
+    const { page, pageSize } = normalizePagination(req)
+    const { query, keyword, agreementId, status } = buildAgreementQuery(req)
+
+    try {
+      const database = db.database()
+      const collection = database.collection(AGREEMENT_COLLECTION)
+      const [total, docs] = await Promise.all([
+        collection.countDocuments(query),
+        collection.find(query)
+          .sort({ publish_time: -1, create_date: -1, _id: -1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray()
+      ])
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: {
+          list: docs.map(normalizeAgreementRecord),
+          total,
+          page,
+          pageSize,
+          meta: {
+            keyword,
+            agreementId,
+            status
+          }
+        }
+      })
+    } catch (error) {
+      logger.error('admin agreement list query failed', error, {
+        query,
+        page,
+        pageSize,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '协议列表查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/agreements/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(AGREEMENT_COLLECTION)
+      const doc = await collection.findOne({ _id: objectId })
+
+      if (!doc) {
+        res.status(404).send({ code: 404, msg: '协议不存在' })
+        return
+      }
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: normalizeAgreementRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin agreement detail query failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '协议详情查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/agreements', async (req, res) => {
+    const agreementId = normalizeAgreementId(req.body?.agreementId || req.body?.agreement_id)
+    const title = String(req.body?.title || '').trim()
+    const content = String(req.body?.content || '')
+    const status = normalizeAgreementStatus(req.body?.status)
+    const publishTimeInput = Number(req.body?.publishTime || req.body?.publish_time || 0)
+    const id = String(req.body?.id || '').trim()
+
+    if (!agreementId) {
+      res.status(400).send({ code: 400, msg: 'agreementId 不能为空' })
+      return
+    }
+
+    if (!title) {
+      res.status(400).send({ code: 400, msg: '标题不能为空' })
+      return
+    }
+
+    if (!String(content).trim()) {
+      res.status(400).send({ code: 400, msg: '协议内容不能为空' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(AGREEMENT_COLLECTION)
+      const now = Date.now()
+      const publishTime = publishTimeInput > 0 ? publishTimeInput : 0
+
+      if (status === 1) {
+        await collection.updateMany(
+          { agreement_id: agreementId, status: 1 },
+          { $set: { status: 0 } }
+        )
+      }
+
+      if (id) {
+        let objectId
+        try {
+          objectId = new db.ObjectId(id)
+        } catch (error) {
+          res.status(400).send({ code: 400, msg: 'id 格式错误' })
+          return
+        }
+
+        const result = await collection.findOneAndUpdate(
+          { _id: objectId },
+          {
+            $set: {
+              agreement_id: agreementId,
+              title,
+              content,
+              status,
+              publish_time: status === 1 ? (publishTime || now) : publishTime,
+              update_time: now
+            }
+          },
+          { returnDocument: 'after' }
+        )
+
+        const doc = result?.value || result
+        if (!doc) {
+          res.status(404).send({ code: 404, msg: '协议不存在' })
+          return
+        }
+
+        logger.info('admin agreement updated', {
+          id,
+          agreementId,
+          status,
+          path: req.originalUrl || req.url
+        })
+
+        res.send({
+          code: 200,
+          msg: '协议保存成功',
+          data: normalizeAgreementRecord(doc)
+        })
+        return
+      }
+
+      const payload = {
+        agreement_id: agreementId,
+        title,
+        content,
+        status,
+        publish_time: status === 1 ? (publishTime || now) : publishTime,
+        create_date: now,
+        update_time: now
+      }
+
+      const result = await collection.insertOne(payload)
+      const doc = await collection.findOne({ _id: result.insertedId })
+
+      logger.info('admin agreement created', {
+        agreementId,
+        status,
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: '协议创建成功',
+        data: normalizeAgreementRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin agreement save failed', error, {
+        path: req.originalUrl || req.url,
+        body: req.body
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '协议保存失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/agreements/:id/publish', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(AGREEMENT_COLLECTION)
+      const current = await collection.findOne({ _id: objectId })
+
+      if (!current) {
+        res.status(404).send({ code: 404, msg: '协议不存在' })
+        return
+      }
+
+      const now = Date.now()
+      await collection.updateMany(
+        { agreement_id: current.agreement_id, status: 1 },
+        { $set: { status: 0 } }
+      )
+
+      const result = await collection.findOneAndUpdate(
+        { _id: objectId },
+        {
+          $set: {
+            status: 1,
+            publish_time: now,
+            update_time: now
+          }
+        },
+        { returnDocument: 'after' }
+      )
+
+      const doc = result?.value || result
+
+      logger.info('admin agreement published', {
+        id,
+        agreementId: current.agreement_id,
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: '协议发布成功',
+        data: normalizeAgreementRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin agreement publish failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '协议发布失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/versions', async (req, res) => {
+    const { page, pageSize } = normalizePagination(req)
+    const { query, keyword, platform, status } = buildVersionQuery(req)
+
+    try {
+      const database = db.database()
+      const collection = database.collection(VERSION_COLLECTION)
+      const [total, docs] = await Promise.all([
+        collection.countDocuments(query),
+        collection.find(query)
+          .sort({ publish_time: -1, create_date: -1, _id: -1 })
+          .skip((page - 1) * pageSize)
+          .limit(pageSize)
+          .toArray()
+      ])
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: {
+          list: docs.map(normalizeVersionRecord),
+          total,
+          page,
+          pageSize,
+          meta: {
+            keyword,
+            platform,
+            status
+          }
+        }
+      })
+    } catch (error) {
+      logger.error('admin version list query failed', error, {
+        query,
+        page,
+        pageSize,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '版本列表查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.get('/versions/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(VERSION_COLLECTION)
+      const doc = await collection.findOne({ _id: objectId })
+
+      if (!doc) {
+        res.status(404).send({ code: 404, msg: '版本不存在' })
+        return
+      }
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: normalizeVersionRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin version detail query failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '版本详情查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/versions', async (req, res) => {
+    const platform = normalizeVersionPlatform(req.body?.platform)
+    const versionName = String(req.body?.versionName || req.body?.version_name || '').trim()
+    const versionCode = Number(req.body?.versionCode || req.body?.version_code || 0)
+    const status = normalizeVersionStatus(req.body?.status)
+    const forceUpdate = !!req.body?.forceUpdate || !!req.body?.force_update
+    const downloadUrl = String(req.body?.downloadUrl || req.body?.download_url || '').trim()
+    const notes = String(req.body?.notes || '')
+    const id = String(req.body?.id || '').trim()
+
+    if (!platform) {
+      res.status(400).send({ code: 400, msg: 'platform 不能为空' })
+      return
+    }
+
+    if (!versionName) {
+      res.status(400).send({ code: 400, msg: '版本号不能为空' })
+      return
+    }
+
+    if (!Number.isFinite(versionCode) || versionCode <= 0) {
+      res.status(400).send({ code: 400, msg: '版本编码不能为空' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(VERSION_COLLECTION)
+      const now = Date.now()
+
+      if (status === 1) {
+        await collection.updateMany(
+          { platform, status: 1 },
+          { $set: { status: 0 } }
+        )
+      }
+
+      if (id) {
+        let objectId
+        try {
+          objectId = new db.ObjectId(id)
+        } catch (error) {
+          res.status(400).send({ code: 400, msg: 'id 格式错误' })
+          return
+        }
+
+        const result = await collection.findOneAndUpdate(
+          { _id: objectId },
+          {
+            $set: {
+              platform,
+              version_name: versionName,
+              version_code: versionCode,
+              status,
+              force_update: forceUpdate,
+              download_url: downloadUrl,
+              notes,
+              publish_time: status === 1 ? now : 0,
+              update_time: now
+            }
+          },
+          { returnDocument: 'after' }
+        )
+
+        const doc = result?.value || result
+        if (!doc) {
+          res.status(404).send({ code: 404, msg: '版本不存在' })
+          return
+        }
+
+        logger.info('admin version updated', {
+          id,
+          platform,
+          versionName,
+          path: req.originalUrl || req.url
+        })
+
+        res.send({
+          code: 200,
+          msg: '版本保存成功',
+          data: normalizeVersionRecord(doc)
+        })
+        return
+      }
+
+      const payload = {
+        platform,
+        version_name: versionName,
+        version_code: versionCode,
+        status,
+        force_update: forceUpdate,
+        download_url: downloadUrl,
+        notes,
+        create_date: now,
+        update_time: now,
+        publish_time: status === 1 ? now : 0
+      }
+
+      const result = await collection.insertOne(payload)
+      const doc = await collection.findOne({ _id: result.insertedId })
+
+      logger.info('admin version created', {
+        platform,
+        versionName,
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: '版本创建成功',
+        data: normalizeVersionRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin version save failed', error, {
+        path: req.originalUrl || req.url,
+        body: req.body
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '版本保存失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/versions/:id/publish', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const collection = database.collection(VERSION_COLLECTION)
+      const current = await collection.findOne({ _id: objectId })
+
+      if (!current) {
+        res.status(404).send({ code: 404, msg: '版本不存在' })
+        return
+      }
+
+      const now = Date.now()
+      await collection.updateMany(
+        { platform: current.platform, status: 1 },
+        { $set: { status: 0 } }
+      )
+
+      const result = await collection.findOneAndUpdate(
+        { _id: objectId },
+        {
+          $set: {
+            status: 1,
+            publish_time: now,
+            update_time: now
+          }
+        },
+        { returnDocument: 'after' }
+      )
+
+      const doc = result?.value || result
+
+      logger.info('admin version published', {
+        id,
+        platform: current.platform,
+        versionName: current.version_name,
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: '版本发布成功',
+        data: normalizeVersionRecord(doc)
+      })
+    } catch (error) {
+      logger.error('admin version publish failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '版本发布失败',
         error: error.message || 'unknown error'
       })
     }
