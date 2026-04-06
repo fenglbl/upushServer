@@ -38,22 +38,6 @@ app.use(cors())
 app.use(bodyParser.json())
 app.use(requestLogger)
 
-if (fs.existsSync(adminStaticDir)) {
-  app.use('/admin', express.static(adminStaticDir))
-  app.use('/admin', (req, res, next) => {
-    if (req.method !== 'GET') {
-      return next()
-    }
-
-    const indexPath = path.join(adminStaticDir, 'index.html')
-    if (fs.existsSync(indexPath)) {
-      return res.sendFile(indexPath)
-    }
-
-    return next()
-  })
-}
-
 // 用原生 http server 承载 express，方便和 WebSocket 共用同一个 3000 端口
 const server = http.createServer(app)
 
@@ -81,6 +65,22 @@ app.use('/logs', requireAdminAuth, createLogsRouter())
 
 // admin 首页聚合接口：为 upush-admin 首页提供 summary / trend / recent 列表
 app.use('/admin', requireAdminAuth, createAdminRouter())
+
+if (fs.existsSync(adminStaticDir)) {
+  app.use('/admin', express.static(adminStaticDir))
+  app.use('/admin', (req, res, next) => {
+    if (req.method !== 'GET') {
+      return next()
+    }
+
+    const indexPath = path.join(adminStaticDir, 'index.html')
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath)
+    }
+
+    return next()
+  })
+}
 
 // 健康检查接口：用于快速确认服务和数据库是否正常
 app.get('/health', async (req, res) => {
