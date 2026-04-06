@@ -3,33 +3,32 @@
 const uniCloud = require('../../db/index.js')
 const { verifyEmailCode } = require('../../utils/emailCode.js')
 const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
+const { requireAuthedUser } = require('../../utils/auth')
 
 exports.main = async (event, context = {}) => {
   const db = uniCloud.database()
   const actor = buildActorFromContext(context)
-  const tokenDB = db.collection('token')
-  const usersDB = db.collection('uni-id-users')
   const changeSessionDB = db.collection('app_email_change_session')
   const nickname = (event.nickname || '').trim()
   const email = (event.email || '').trim().toLowerCase()
   const emailCode = event.email_code || ''
   const oldEmail = (event.old_email || '').trim().toLowerCase()
   const changeEmailToken = event.change_email_token || ''
-  const token = event.token || ''
 
-  if (!token) {
+  const auth = await requireAuthedUser(event)
+  if (!auth.ok) {
     auditSecurity('profile_update_failed', {
       result: 'rejected',
-      reason: 'token_required',
+      reason: 'auth_invalid',
+      email,
       actor
     })
-
-    return {
-      code: 202,
-      msg: '请先登录',
-      data: {}
-    }
+    return auth.response
   }
+
+  const usersDB = auth.usersDB
+  const userId = auth.userId
+  const user = auth.user || {}
 
   if (!nickname) {
     auditSecurity('profile_update_failed', {
@@ -46,25 +45,6 @@ exports.main = async (event, context = {}) => {
     }
   }
 
-  const tokenInfo = await tokenDB.find({ token }).toArray()
-  if (!tokenInfo.length) {
-    auditSecurity('profile_update_failed', {
-      result: 'rejected',
-      reason: 'token_invalid',
-      email,
-      actor
-    })
-
-    return {
-      code: 202,
-      msg: '登录已失效',
-      data: {}
-    }
-  }
-
-  const userId = tokenInfo[0].user_id
-  const userInfo = await usersDB.find({ _id: userId }).limit(1).toArray()
-  const user = userInfo[0] || {}
   const currentEmail = (user.email || '').trim().toLowerCase()
 
   if (email) {

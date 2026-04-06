@@ -2,25 +2,24 @@
 
 const md5 = require('md5')
 const uniCloud = require('../../db/index.js')
+const { requireAuthedUser } = require('../../utils/auth')
 
 exports.main = async (event) => {
   const db = uniCloud.database()
-  const tokenDB = db.collection('token')
-  const usersDB = db.collection('uni-id-users')
   const changeSessionDB = db.collection('app_email_change_session')
-  const token = event.token || ''
   const changeEmailToken = event.change_email_token || ''
   const password = event.password || ''
   const confirmPassword = event.confirm_password || ''
   const key = 'fenglbl.upush.'
 
-  if (!token) {
-    return {
-      code: 202,
-      msg: '请先登录',
-      data: {}
-    }
+  const auth = await requireAuthedUser(event)
+  if (!auth.ok) {
+    return auth.response
   }
+
+  const usersDB = auth.usersDB
+  const userId = auth.userId
+  const user = auth.user || {}
 
   if (!changeEmailToken) {
     return {
@@ -54,18 +53,6 @@ exports.main = async (event) => {
     }
   }
 
-  const tokenInfo = await tokenDB.find({ token }).toArray()
-  if (!tokenInfo.length) {
-    return {
-      code: 202,
-      msg: '登录已失效',
-      data: {}
-    }
-  }
-
-  const userId = tokenInfo[0].user_id
-  const userInfo = await usersDB.find({ _id: userId }).limit(1).toArray()
-  const user = userInfo[0] || {}
   const currentEmail = (user.email || '').trim().toLowerCase()
 
   const changeSessionList = await changeSessionDB.find({

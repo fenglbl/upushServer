@@ -32,23 +32,131 @@ function buildPushPayload(basePayload, messageId) {
   return nextPayload
 }
 
+function normalizeTargetType(value, deviceId) {
+  const next = String(value || 'user').trim().toLowerCase()
+  const hasExplicitDeviceId = String(deviceId || '').trim().length > 0
+
+  // 兼容旧接口：只有显式声明 device 模式且明确传了 deviceId，
+  // 才进入单设备推送分支；其他所有情况都回落到旧的用户推送逻辑。
+  return next === 'device' && hasExplicitDeviceId ? 'device' : 'user'
+}
+
+function normalizeDevicePlatform(platform) {
+  const value = String(platform || '').trim().toLowerCase()
+  if (!value) return ''
+  if (value === 'android') return 'android'
+  if (value === 'ios') return 'ios'
+  if (value === 'h5' || value === 'web') return 'h5'
+  if (value === 'app' || value === 'app-plus' || value === 'app_plus') return 'app'
+  if (value === 'mp-weixin' || value === 'weixin' || value === 'wechat' || value === 'wechat-miniprogram') return 'wechat'
+  return value
+}
+
+function shouldUseGetui(device) {
+  return normalizeDevicePlatform(device && device.platform) === 'android'
+}
+
+async function resolvePushTargets(deviceDB, event, ip) {
+  const id = String(event.id || '').trim()
+  const rawDeviceId = String(event.deviceId || '').trim()
+  const targetType = normalizeTargetType(event.targetType, rawDeviceId)
+
+  if (targetType === 'device') {
+    const identifier = rawDeviceId
+    if (!identifier) {
+      return {
+        ok: false,
+        code: 201,
+        msg: '目标设备不能为空',
+        data: {}
+      }
+    }
+
+    let device = null
+
+    try {
+      device = await deviceDB.findOne({ _id: new uniCloud.ObjectId(identifier) })
+    } catch (error) {
+      device = null
+    }
+
+    if (!device) {
+      device = await deviceDB.findOne({ device_id: identifier })
+    }
+
+    if (!device) {
+      logger.warn('push target device not found', {
+        deviceId: identifier,
+        ip
+      })
+      return {
+        ok: false,
+        code: 404,
+        msg: '目标设备不存在',
+        data: {}
+      }
+    }
+
+    return {
+      ok: true,
+      targetType,
+      userId: device.user_id || null,
+      devices: [device],
+      meta: {
+        targetDeviceId: String(device._id || ''),
+        rawDeviceId: device.device_id || ''
+      }
+    }
+  }
+
+  if (!id) {
+    return {
+      ok: false,
+      code: 201,
+      msg: '目标用户 id 不能为空',
+      data: {}
+    }
+  }
+
+  let userId
+  try {
+    userId = new uniCloud.ObjectId(id)
+  } catch (error) {
+    logger.warn('push target user id invalid', {
+      id,
+      ip
+    })
+    return {
+      ok: false,
+      code: 201,
+      msg: '目标用户 id 格式错误',
+      data: {}
+    }
+  }
+
+  const devices = await deviceDB.find({ user_id: userId }).toArray()
+  return {
+    ok: true,
+    targetType,
+    userId,
+    devices,
+    meta: {
+      targetUserId: id
+    }
+  }
+}
+
 exports.main = async (event, context = {}) => {
   const ip = context.CLIENTIP
-  let { id, title, content, payload } = event
+  const { title } = event
+  const content = event.content || ''
+  const payload = event.payload
 
   const db = uniCloud.database()
   const deviceDB = db.collection('uni-id-device')
   const pushMsgDB = db.collection('uni-push-message')
   const pushBatchDB = db.collection(PUSH_BATCH_COLLECTION)
   const requestTime = Date.now()
-
-  if (!id) {
-    return {
-      code: 201,
-      msg: '目标用户 id 不能为空',
-      data: {}
-    }
-  }
 
   if (!title) {
     return {
@@ -58,40 +166,41 @@ exports.main = async (event, context = {}) => {
     }
   }
 
-  let userId
-  try {
-    userId = new uniCloud.ObjectId(id)
-  } catch (error) {
-    logger.warn('push target id invalid', {
-      id,
-      ip
-    })
+  const target = await resolvePushTargets(deviceDB, event, ip)
+  if (!target.ok) {
     return {
-      code: 201,
-      msg: '目标用户 id 格式错误',
-      data: {}
+      code: target.code,
+      msg: target.msg,
+      data: target.data || {}
     }
   }
 
-  const devices = await deviceDB.find({ user_id: userId }).toArray()
+  const { targetType, userId, devices, meta } = target
+  const normalizedPayload = normalizePayload(payload)
+
   if (!devices.length) {
     logger.warn('push target devices not found', {
-      userId: id,
+      targetType,
+      userId: userId ? String(userId) : '',
+      ...meta,
       ip
     })
 
     const batchDoc = {
-      user_id: userId,
+      user_id: userId || null,
+      target_type: targetType,
+      target_device_id: meta.targetDeviceId || '',
+      target_device_raw_id: meta.rawDeviceId || '',
       title,
-      content: content || '',
-      payload: normalizePayload(payload),
+      content,
+      payload: normalizedPayload,
       ip,
       create_time: requestTime,
       total_devices: 0,
       success_count: 0,
       failure_count: 0,
       result_code: 404,
-      result_msg: '目标用户没有可用设备',
+      result_msg: targetType === 'device' ? '目标设备不可用' : '目标用户没有可用设备',
       status: 'no_device',
       results: []
     }
@@ -100,7 +209,7 @@ exports.main = async (event, context = {}) => {
 
     return {
       code: 404,
-      msg: '目标用户没有可用设备',
+      msg: batchDoc.result_msg,
       data: {
         batchId: String(insertBatchRes.insertedId),
         totalDevices: 0,
@@ -111,12 +220,13 @@ exports.main = async (event, context = {}) => {
     }
   }
 
-  const normalizedPayload = normalizePayload(payload)
-
   const batchSeed = {
-    user_id: userId,
+    user_id: userId || null,
+    target_type: targetType,
+    target_device_id: meta.targetDeviceId || '',
+    target_device_raw_id: meta.rawDeviceId || '',
     title,
-    content: content || '',
+    content,
     payload: normalizedPayload,
     ip,
     create_time: requestTime,
@@ -143,7 +253,7 @@ exports.main = async (event, context = {}) => {
         device_id: item.device_id,
         create_time: t,
         title,
-        content: content || '',
+        content,
         payload: normalizedPayload,
         batch_id: batchId,
         send_status: 'pending'
@@ -151,13 +261,32 @@ exports.main = async (event, context = {}) => {
 
       insertedMessageId = insertData.insertedId
       const pushPayload = buildPushPayload(normalizedPayload, insertData.insertedId)
+      const useGetui = shouldUseGetui(item)
 
-      const pushResponse = await unipush.sendMessage({
-        push_clientid: item.device_id,
-        title,
-        content,
-        payload: pushPayload
-      })
+      let pushResponse = null
+
+      if (useGetui) {
+        pushResponse = await unipush.sendMessage({
+          push_clientid: item.device_id,
+          title,
+          content,
+          payload: pushPayload
+        })
+      } else {
+        pushResponse = {
+          provider: 'storage_only',
+          skipped: true,
+          reason: 'platform_not_supported_by_getui',
+          platform: item.platform || ''
+        }
+
+        logger.info('push provider skipped for non-android device', {
+          deviceId: item.device_id,
+          platform: item.platform || '',
+          title,
+          targetType
+        })
+      }
 
       await pushMsgDB.updateOne({ _id: insertData.insertedId }, {
         $set: {
@@ -173,13 +302,15 @@ exports.main = async (event, context = {}) => {
         deviceId: item.device_id,
         messageId: String(insertData.insertedId),
         payload: pushPayload,
-        providerResponse: pushResponse || null
+        providerResponse: pushResponse || null,
+        providerSkipped: !useGetui
       }
     } catch (error) {
       logger.error('push delivery failed', error, {
-        userId: String(item.user_id),
+        userId: String(item.user_id || ''),
         deviceId: item.device_id,
-        title
+        title,
+        targetType
       })
 
       const providerResponse = error.response && error.response.data ? error.response.data : null
@@ -212,12 +343,14 @@ exports.main = async (event, context = {}) => {
   const failureCount = results.length - successCount
 
   logger.info('push cloudfunction completed', {
-    userId: id,
+    targetType,
+    userId: userId ? String(userId) : '',
     totalDevices: devices.length,
     successCount,
     failureCount,
     ip,
-    batchId: String(batchId)
+    batchId: String(batchId),
+    ...meta
   })
 
   let code = 200
@@ -254,7 +387,8 @@ exports.main = async (event, context = {}) => {
       totalDevices: devices.length,
       successCount,
       failureCount,
-      results
+      results,
+      targetType
     }
   }
 }

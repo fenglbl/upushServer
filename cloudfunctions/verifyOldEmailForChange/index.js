@@ -3,6 +3,7 @@
 const uniCloud = require('../../db/index.js')
 const { verifyEmailCode } = require('../../utils/emailCode.js')
 const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
+const { requireAuthedUser } = require('../../utils/auth')
 
 function createChangeEmailToken() {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 10)}`
@@ -11,27 +12,23 @@ function createChangeEmailToken() {
 exports.main = async (event, context = {}) => {
   const db = uniCloud.database()
   const actor = buildActorFromContext(context)
-  const tokenDB = db.collection('token')
-  const usersDB = db.collection('uni-id-users')
   const changeSessionDB = db.collection('app_email_change_session')
   const oldEmail = (event.old_email || '').trim().toLowerCase()
   const oldEmailCode = event.old_email_code || ''
-  const token = event.token || ''
 
-  if (!token) {
+  const auth = await requireAuthedUser(event)
+  if (!auth.ok) {
     auditSecurity('verify_old_email_for_change_failed', {
       result: 'rejected',
-      reason: 'token_required',
+      reason: 'auth_invalid',
       oldEmail,
       actor
     })
-
-    return {
-      code: 202,
-      msg: '请先登录',
-      data: {}
-    }
+    return auth.response
   }
+
+  const userId = auth.userId
+  const user = auth.user || {}
 
   if (!oldEmail) {
     auditSecurity('verify_old_email_for_change_failed', {
@@ -63,25 +60,6 @@ exports.main = async (event, context = {}) => {
     }
   }
 
-  const tokenInfo = await tokenDB.find({ token }).toArray()
-  if (!tokenInfo.length) {
-    auditSecurity('verify_old_email_for_change_failed', {
-      result: 'rejected',
-      reason: 'token_invalid',
-      oldEmail,
-      actor
-    })
-
-    return {
-      code: 202,
-      msg: '登录已失效',
-      data: {}
-    }
-  }
-
-  const userId = tokenInfo[0].user_id
-  const userInfo = await usersDB.find({ _id: userId }).limit(1).toArray()
-  const user = userInfo[0] || {}
   const currentEmail = (user.email || '').trim().toLowerCase()
 
   if (!currentEmail) {

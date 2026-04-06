@@ -354,6 +354,12 @@ function normalizeDeviceRecord(doc) {
   }
 }
 
+function normalizeUserStatusInput(value) {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return null
+  return next === 0 || next === 1 ? next : null
+}
+
 function buildDeviceQuery(req) {
   const keyword = normalizeKeyword(req.query.keyword)
   const userId = normalizeKeyword(req.query.userId)
@@ -686,7 +692,6 @@ function createAdminRouter() {
   router.get('/dashboard', async (req, res) => {
     const range = normalizeRange(req.query.range)
     const startMs = getRangeStartMs(range)
-    const { startMs: todayStartMs, endMs: todayEndMs } = getTodayRange()
 
     try {
       const database = db.database()
@@ -699,11 +704,8 @@ function createAdminRouter() {
         .limit(10)
         .toArray()
 
-      const todayDocs = await batchCollection.find({
-        create_time: {
-          $gte: todayStartMs,
-          $lt: todayEndMs
-        }
+      const rangeSummaryDocs = await batchCollection.find({
+        create_time: { $gte: startMs }
       }, {
         projection: {
           status: 1
@@ -719,7 +721,7 @@ function createAdminRouter() {
         .toArray()
 
       const recentPushes = recentDocs.map(normalizeBatchRecord)
-      const todayPushes = todayDocs.map(normalizeBatchRecord)
+      const rangeSummaryPushes = rangeSummaryDocs.map(normalizeBatchRecord)
       const recentErrors = errorDocs.map(buildErrorRecordFromBatch)
       const trend = await queryTrend(batchCollection, range, startMs)
 
@@ -727,7 +729,7 @@ function createAdminRouter() {
         code: 200,
         msg: 'ok',
         data: {
-          summary: buildSummary(todayPushes),
+          summary: buildSummary(rangeSummaryPushes),
           trend,
           recentPushes,
           recentErrors,
@@ -974,6 +976,105 @@ function createAdminRouter() {
     }
   })
 
+  router.post('/users/:id/status', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    const status = normalizeUserStatusInput(req.body?.status)
+    if (status === null) {
+      res.status(400).send({ code: 400, msg: 'status 仅支持 0 或 1' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const userCollection = database.collection('uni-id-users')
+      const deviceCollection = database.collection('uni-id-device')
+      const now = Date.now()
+
+      const current = await userCollection.findOne({ _id: objectId }, {
+        projection: {
+          username: 1,
+          nickname: 1,
+          email: 1,
+          status: 1,
+          register_date: 1,
+          last_login_date: 1
+        }
+      })
+
+      if (!current) {
+        res.status(404).send({ code: 404, msg: '用户不存在' })
+        return
+      }
+
+      await userCollection.updateOne(
+        { _id: objectId },
+        {
+          $set: {
+            status,
+            updated_at: now
+          }
+        }
+      )
+
+      const [updated, deviceCount] = await Promise.all([
+        userCollection.findOne({ _id: objectId }, {
+          projection: {
+            username: 1,
+            nickname: 1,
+            email: 1,
+            status: 1,
+            register_date: 1,
+            last_login_date: 1
+          }
+        }),
+        deviceCollection.countDocuments({
+          user_id: { $in: [id, objectId] }
+        })
+      ])
+
+      logger.info('admin user status updated', {
+        userId: id,
+        previousStatus: Number(current.status || 0),
+        nextStatus: status,
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: {
+          ...normalizeUserRecord(updated || current),
+          deviceCount
+        }
+      })
+    } catch (error) {
+      logger.error('admin user status update failed', error, {
+        id,
+        status,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '用户状态更新失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
   router.get('/devices', async (req, res) => {
     const { page, pageSize } = normalizePagination(req)
     const { query, keyword, userId } = buildDeviceQuery(req)
@@ -1114,6 +1215,72 @@ function createAdminRouter() {
       res.status(500).send({
         code: 500,
         msg: '设备详情查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.delete('/devices/:id', async (req, res) => {
+    const id = String(req.params.id || '').trim()
+    if (!id) {
+      res.status(400).send({ code: 400, msg: 'id 不能为空' })
+      return
+    }
+
+    let objectId
+    try {
+      objectId = new db.ObjectId(id)
+    } catch (error) {
+      res.status(400).send({ code: 400, msg: 'id 格式错误' })
+      return
+    }
+
+    try {
+      const database = db.database()
+      const deviceCollection = database.collection('uni-id-device')
+      const current = await deviceCollection.findOne({ _id: objectId }, {
+        projection: {
+          user_id: 1,
+          device_id: 1,
+          platform: 1,
+          token_expired: 1
+        }
+      })
+
+      if (!current) {
+        res.status(404).send({ code: 404, msg: '设备不存在' })
+        return
+      }
+
+      await deviceCollection.deleteOne({ _id: objectId })
+
+      logger.info('admin device removed', {
+        deviceId: id,
+        userId: String(current.user_id || ''),
+        rawDeviceId: current.device_id || '',
+        platform: current.platform || '',
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: 'ok',
+        data: {
+          id,
+          userId: String(current.user_id || ''),
+          deviceId: current.device_id || '',
+          platform: current.platform || ''
+        }
+      })
+    } catch (error) {
+      logger.error('admin device remove failed', error, {
+        id,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '设备移除失败',
         error: error.message || 'unknown error'
       })
     }

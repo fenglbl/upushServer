@@ -12,11 +12,24 @@ function trimTrailingSlash(value) {
   return value ? value.replace(/\/+$/, '') : value;
 }
 
+function normalizeHttpsUrl(value) {
+  const text = trimTrailingSlash(String(value || '').trim())
+  if (!text) return text
+  if (/^https:\/\//i.test(text)) return text
+  if (/^http:\/\//i.test(text)) return `https://${text.replace(/^http:\/\//i, '')}`
+  return `https://${text.replace(/^\/+/, '')}`
+}
+
 const config = {
   appkey: process.env.GETUI_APPKEY,
   mastersecret: process.env.GETUI_MASTERSECRET,
-  serverUrl: trimTrailingSlash(process.env.GETUI_SERVER_URL)
+  serverUrl: normalizeHttpsUrl(process.env.GETUI_SERVER_URL)
 };
+
+const http = axios.create({
+  timeout: 15000,
+  proxy: false
+})
 
 function validateConfig() {
   const missingKeys = [];
@@ -97,7 +110,7 @@ class GeTui {
     const sign = getSign(config.appkey,timestamp,config.mastersecret)
 
     try {
-      const response = await axios.post(`${config.serverUrl}/auth`, {
+      const response = await http.post(`${config.serverUrl}/auth`, {
         appkey: config.appkey,
         sign: sign,
         timestamp: timestamp
@@ -214,7 +227,7 @@ async function sendMessage(pushData, options = {}) {
         }
       }
     }
-    const response = await axios.post(
+    const response = await http.post(
       `${config.serverUrl}/push/single/cid`,
       pushParams,
       {

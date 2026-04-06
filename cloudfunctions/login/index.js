@@ -1,6 +1,7 @@
 'use strict';
 const md5 = require('md5')
 const { auditSecurity, buildActorFromContext } = require('../../utils/auditLogger')
+const { isUserDisabledStatus } = require('../../utils/auth')
 // token有效期长度（单位ms）
 const tokenLong = 1000 * 60 * 60 * 24 * 365 * 100; // 默认100年
 const uniCloud = require('../../db/index.js');
@@ -11,6 +12,7 @@ exports.main = async (event, context = {}) => {
   const deviceId = context.deviceId
   const appid = context.APPID
   const actor = buildActorFromContext(context)
+  const platform = String(event.platform || '').trim()
 	//event为客户端上传的参数
   const key = 'fenglbl.upush.'
   const pwd = md5(key + event.password)
@@ -25,6 +27,39 @@ exports.main = async (event, context = {}) => {
   
   if(res.length){
     const userData = res[0]
+
+    if (Number(userData.status) === -1) {
+      auditSecurity('login_failed', {
+        result: 'rejected',
+        reason: 'account_closed',
+        userId: userData._id,
+        username: event.username,
+        actor
+      })
+
+      return {
+        code: 201,
+        msg: '账号已注销',
+        data: {}
+      }
+    }
+
+    if (isUserDisabledStatus(userData.status)) {
+      auditSecurity('login_failed', {
+        result: 'rejected',
+        reason: 'account_disabled',
+        userId: userData._id,
+        username: event.username,
+        actor
+      })
+
+      return {
+        code: 201,
+        msg: '账号已被禁用',
+        data: {}
+      }
+    }
+
     let token;
     // 验证token是否过期
     const userToken = await tokenDB.find({token:userData.token}).toArray()
@@ -61,7 +96,18 @@ exports.main = async (event, context = {}) => {
         ua:ua,
         uuid:md5(userData._id + event.cid),
         create_date:t,
+        last_active_date:t,
         device_id: event.cid,
+        platform: platform,
+      })
+    }else{
+      deviceDB.updateOne({ _id: devices[0]._id }, {
+        $set: {
+          user_id: userData._id,
+          ua: ua,
+          last_active_date: t,
+          ...(platform ? { platform } : {})
+        }
       })
     }
     // 修改数据
