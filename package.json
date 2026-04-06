@@ -5,7 +5,8 @@
   "description": "Standalone backend service for upush",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js"
+    "start": "node app.js",
+    "deploy:admin": "node scripts/deploy-admin.js"
   },
   "dependencies": {
     "axios": "^1.11.0",

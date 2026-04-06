@@ -32,10 +32,27 @@ fs.readdirSync(cloudfunctionsDir, { withFileTypes: true })
 
 const app = express()
 const port = Number(process.env.PORT || 3000)
+const adminStaticDir = path.join(__dirname, 'public', 'admin')
 
 app.use(cors())
 app.use(bodyParser.json())
 app.use(requestLogger)
+
+if (fs.existsSync(adminStaticDir)) {
+  app.use('/admin', express.static(adminStaticDir))
+  app.use('/admin', (req, res, next) => {
+    if (req.method !== 'GET') {
+      return next()
+    }
+
+    const indexPath = path.join(adminStaticDir, 'index.html')
+    if (fs.existsSync(indexPath)) {
+      return res.sendFile(indexPath)
+    }
+
+    return next()
+  })
+}
 
 // 用原生 http server 承载 express，方便和 WebSocket 共用同一个 3000 端口
 const server = http.createServer(app)
