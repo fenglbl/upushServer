@@ -1,4 +1,6 @@
 const express = require('express')
+const fs = require('fs')
+const path = require('path')
 const db = require('../../db')
 const logger = require('../../utils/logger')
 
@@ -9,6 +11,8 @@ const ADMIN_SETTINGS_KEY = 'default'
 const FEEDBACK_COLLECTION = 'app_feedback'
 const AGREEMENT_COLLECTION = 'app_agreement'
 const VERSION_COLLECTION = 'app_version'
+const PACKAGE_PUBLIC_DIR = path.join(__dirname, '../../public/package')
+const MAX_PACKAGE_UPLOAD_BYTES = 200 * 1024 * 1024
 
 function pad(num) {
   return String(num).padStart(2, '0')
@@ -622,6 +626,35 @@ function buildAgreementQuery(req) {
     agreementId: agreementId || 'all',
     status: statusValue || 'all'
   }
+}
+
+function ensurePackagePublicDir() {
+  fs.mkdirSync(PACKAGE_PUBLIC_DIR, { recursive: true })
+}
+
+function sanitizeUploadBaseName(name) {
+  return String(name || 'package')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^a-zA-Z0-9-_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80) || 'package'
+}
+
+function sanitizeUploadExtension(name) {
+  const ext = path.extname(String(name || '')).toLowerCase()
+  return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : ''
+}
+
+function buildPackagePublicUrl(req, fileName) {
+  const publicBaseUrl = String(process.env.PUBLIC_DOWNLOAD_BASE_URL || '').trim().replace(/\/$/, '')
+  if (publicBaseUrl) {
+    return `${publicBaseUrl}/package/${fileName}`
+  }
+
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http'
+  const host = req.headers['x-forwarded-host'] || req.get('host') || '127.0.0.1:3000'
+  return `${protocol}://${host}/package/${fileName}`
 }
 
 function normalizeVersionStatus(value) {
@@ -1847,6 +1880,61 @@ function createAdminRouter() {
       res.status(500).send({
         code: 500,
         msg: '版本列表查询失败',
+        error: error.message || 'unknown error'
+      })
+    }
+  })
+
+  router.post('/upload/package', express.raw({ type: '*/*', limit: MAX_PACKAGE_UPLOAD_BYTES }), async (req, res) => {
+    const originalName = String(req.headers['x-file-name'] || '').trim()
+    const body = req.body
+
+    if (!originalName) {
+      res.status(400).send({ code: 400, msg: '文件名不能为空' })
+      return
+    }
+
+    if (!body || !Buffer.isBuffer(body) || !body.length) {
+      res.status(400).send({ code: 400, msg: '上传文件不能为空' })
+      return
+    }
+
+    try {
+      ensurePackagePublicDir()
+      const baseName = sanitizeUploadBaseName(originalName)
+      const ext = sanitizeUploadExtension(originalName)
+      const fileName = `${Date.now()}-${baseName}${ext}`
+      const filePath = path.join(PACKAGE_PUBLIC_DIR, fileName)
+
+      fs.writeFileSync(filePath, body)
+
+      const downloadUrl = buildPackagePublicUrl(req, fileName)
+
+      logger.info('admin package uploaded', {
+        fileName,
+        size: body.length,
+        path: req.originalUrl || req.url
+      })
+
+      res.send({
+        code: 200,
+        msg: '文件上传成功',
+        data: {
+          fileName,
+          size: body.length,
+          relativePath: `/package/${fileName}`,
+          downloadUrl
+        }
+      })
+    } catch (error) {
+      logger.error('admin package upload failed', error, {
+        originalName,
+        path: req.originalUrl || req.url
+      })
+
+      res.status(500).send({
+        code: 500,
+        msg: '文件上传失败',
         error: error.message || 'unknown error'
       })
     }

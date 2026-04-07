@@ -33,6 +33,9 @@ fs.readdirSync(cloudfunctionsDir, { withFileTypes: true })
 const app = express()
 const port = Number(process.env.PORT || 3000)
 const adminStaticDir = path.join(__dirname, 'public', 'admin')
+const packageStaticDir = path.join(__dirname, 'public', 'package')
+
+fs.mkdirSync(packageStaticDir, { recursive: true })
 
 app.use(cors())
 app.use(bodyParser.json())
@@ -58,13 +61,15 @@ app.use('/pushMessage', createPushMessageRouter({ cloudfunctions, wsServer }))
 // 云函数统一入口
 app.use('/cloudfunction', createCloudfunctionRouter({ cloudfunctions }))
 
-app.use('/admin/auth', createAdminAuthRouter())
+app.use('/api/admin/auth', createAdminAuthRouter())
 
 // 日志查看接口：支持按日期、级别、关键词做基础筛选
-app.use('/logs', requireAdminAuth, createLogsRouter())
+app.use('/api/logs', requireAdminAuth, createLogsRouter())
 
 // admin 首页聚合接口：为 upush-admin 首页提供 summary / trend / recent 列表
-app.use('/admin', requireAdminAuth, createAdminRouter())
+app.use('/api/admin', requireAdminAuth, createAdminRouter())
+
+app.use('/package', express.static(packageStaticDir))
 
 if (fs.existsSync(adminStaticDir)) {
   app.use('/admin', express.static(adminStaticDir))

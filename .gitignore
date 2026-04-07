@@ -6,6 +6,7 @@ node_modules/
 # runtime cache
 unipush/getui_token_cache.json
 /logs/
+/public/package/
 *.log
 
 # OS / editor
