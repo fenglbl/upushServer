@@ -13,6 +13,7 @@ const AGREEMENT_COLLECTION = 'app_agreement'
 const VERSION_COLLECTION = 'app_version'
 const PACKAGE_PUBLIC_DIR = path.join(__dirname, '../../public/package')
 const MAX_PACKAGE_UPLOAD_BYTES = 200 * 1024 * 1024
+const ALLOWED_PACKAGE_EXTENSIONS = new Set(['.apk', '.ipa', '.zip', '.exe', '.msi', '.dmg', '.AppImage', '.wgt'])
 
 function pad(num) {
   return String(num).padStart(2, '0')
@@ -642,8 +643,8 @@ function sanitizeUploadBaseName(name) {
 }
 
 function sanitizeUploadExtension(name) {
-  const ext = path.extname(String(name || '')).toLowerCase()
-  return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : ''
+  const ext = path.extname(String(name || '')).trim()
+  return /^\.[a-zA-Z0-9]{1,10}$/.test(ext) ? ext : ''
 }
 
 function buildPackagePublicUrl(req, fileName) {
@@ -1903,6 +1904,12 @@ function createAdminRouter() {
       ensurePackagePublicDir()
       const baseName = sanitizeUploadBaseName(originalName)
       const ext = sanitizeUploadExtension(originalName)
+
+      if (!ext || !ALLOWED_PACKAGE_EXTENSIONS.has(ext)) {
+        res.status(400).send({ code: 400, msg: '仅支持 apk、ipa、zip、exe、msi、dmg、AppImage、wgt 文件' })
+        return
+      }
+
       const fileName = `${Date.now()}-${baseName}${ext}`
       const filePath = path.join(PACKAGE_PUBLIC_DIR, fileName)
 
