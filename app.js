@@ -34,10 +34,38 @@ const app = express()
 const port = Number(process.env.PORT || 3000)
 const adminStaticDir = path.join(__dirname, 'public', 'admin')
 const packageStaticDir = path.join(__dirname, 'public', 'package')
+const allowedOriginList = String(process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true)
+    }
+
+    if (!allowedOriginList.length || allowedOriginList.includes(origin)) {
+      return callback(null, true)
+    }
+
+    return callback(new Error(`CORS origin not allowed: ${origin}`))
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-File-Name'],
+  optionsSuccessStatus: 204,
+  maxAge: 86400
+}
 
 fs.mkdirSync(packageStaticDir, { recursive: true })
 
-app.use(cors())
+app.use(cors(corsOptions))
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    return cors(corsOptions)(req, res, next)
+  }
+  return next()
+})
 app.use(bodyParser.json())
 app.use(requestLogger)
 
