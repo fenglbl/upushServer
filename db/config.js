@@ -3,5 +3,6 @@ module.exports = {
   db_port: process.env.DB_PORT,
   db_user: process.env.DB_USER,
   db_password: process.env.DB_PASSWORD,
-  db_name: process.env.DB_NAME
+  db_name: process.env.DB_NAME,
+  db_auth_source: process.env.DB_AUTH_SOURCE || 'admin'
 }
