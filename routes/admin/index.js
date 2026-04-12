@@ -668,6 +668,64 @@ function normalizeVersionPlatform(value) {
   return next || 'app'
 }
 
+function buildVersionNameQuery({ platform, versionName, excludeId }) {
+  const query = {
+    platform,
+    version_name: versionName
+  }
+
+  if (excludeId) {
+    try {
+      query._id = { $ne: new db.ObjectId(excludeId) }
+    } catch (error) {
+      query._id = { $ne: excludeId }
+    }
+  }
+
+  return query
+}
+
+function buildVersionCodeQuery({ platform, versionCode, excludeId }) {
+  const query = {
+    platform,
+    version_code: versionCode
+  }
+
+  if (excludeId) {
+    try {
+      query._id = { $ne: new db.ObjectId(excludeId) }
+    } catch (error) {
+      query._id = { $ne: excludeId }
+    }
+  }
+
+  return query
+}
+
+function buildVersionCodeConflict(doc, { versionCode }) {
+  if (!doc) {
+    return null
+  }
+
+  return {
+    code: 409,
+    msg: `当前平台下版本编码 ${versionCode} 已存在`,
+    data: normalizeVersionRecord(doc)
+  }
+}
+
+async function findVersionByName(collection, { platform, versionName, excludeId }) {
+  return await collection.findOne(buildVersionNameQuery({ platform, versionName, excludeId }))
+}
+
+async function ensureVersionCodeUnique(collection, { platform, versionCode, excludeId }) {
+  const duplicated = await collection.findOne(
+    buildVersionCodeQuery({ platform, versionCode, excludeId })
+  )
+
+  return buildVersionCodeConflict(duplicated, { versionCode })
+}
+
 function normalizeVersionRecord(doc) {
   return {
     id: String(doc._id || ''),
@@ -1849,7 +1907,7 @@ function createAdminRouter() {
       const [total, docs] = await Promise.all([
         collection.countDocuments(query),
         collection.find(query)
-          .sort({ publish_time: -1, create_date: -1, _id: -1 })
+          .sort({ version_code: -1, publish_time: -1, update_time: -1, _id: -1 })
           .skip((page - 1) * pageSize)
           .limit(pageSize)
           .toArray()
@@ -2021,24 +2079,40 @@ function createAdminRouter() {
       const collection = database.collection(VERSION_COLLECTION)
       const now = Date.now()
 
-      if (status === 1) {
-        await collection.updateMany(
-          { platform, status: 1 },
-          { $set: { status: 0 } }
-        )
-      }
-
-      if (id) {
-        let objectId
+      async function saveVersionDocument(targetId, successMessage) {
+        let targetObjectId
         try {
-          objectId = new db.ObjectId(id)
+          targetObjectId = new db.ObjectId(targetId)
         } catch (error) {
           res.status(400).send({ code: 400, msg: 'id 格式错误' })
-          return
+          return true
         }
 
+        const codeConflict = await ensureVersionCodeUnique(collection, {
+          platform,
+          versionCode,
+          excludeId: targetId
+        })
+        if (codeConflict) {
+          res.status(409).send(codeConflict)
+          return true
+        }
+
+        if (status === 1) {
+          await collection.updateMany(
+            { platform, status: 1, _id: { $ne: targetObjectId } },
+            { $set: { status: 0 } }
+          )
+        }
+
+        const current = await collection.findOne({ _id: targetObjectId })
+        const nextCreateDate = Number(current?.create_date || now)
+        const nextPublishTime = status === 1
+          ? (current?.publish_time ? Number(current.publish_time) : now)
+          : 0
+
         const result = await collection.findOneAndUpdate(
-          { _id: objectId },
+          { _id: targetObjectId },
           {
             $set: {
               platform,
@@ -2048,7 +2122,8 @@ function createAdminRouter() {
               force_update: forceUpdate,
               download_url: downloadUrl,
               notes,
-              publish_time: status === 1 ? now : 0,
+              create_date: nextCreateDate,
+              publish_time: nextPublishTime,
               update_time: now
             }
           },
@@ -2058,22 +2133,58 @@ function createAdminRouter() {
         const doc = result?.value || result
         if (!doc) {
           res.status(404).send({ code: 404, msg: '版本不存在' })
-          return
+          return true
         }
 
-        logger.info('admin version updated', {
-          id,
+        logger.info('admin version saved', {
+          id: String(doc._id || ''),
           platform,
           versionName,
+          versionCode,
+          mode: successMessage.includes('更新') ? 'update-existing' : 'save-explicit',
           path: req.originalUrl || req.url
         })
 
         res.send({
           code: 200,
-          msg: '版本保存成功',
+          msg: successMessage,
           data: normalizeVersionRecord(doc)
         })
+        return true
+      }
+
+      if (id) {
+        const handled = await saveVersionDocument(id, '版本保存成功')
+        if (handled) {
+          return
+        }
+      }
+
+      const existingByName = await findVersionByName(collection, {
+        platform,
+        versionName
+      })
+      if (existingByName) {
+        const handled = await saveVersionDocument(String(existingByName._id || ''), `已更新现有版本 ${versionName}`)
+        if (handled) {
+          return
+        }
+      }
+
+      const codeConflict = await ensureVersionCodeUnique(collection, {
+        platform,
+        versionCode
+      })
+      if (codeConflict) {
+        res.status(409).send(codeConflict)
         return
+      }
+
+      if (status === 1) {
+        await collection.updateMany(
+          { platform, status: 1 },
+          { $set: { status: 0 } }
+        )
       }
 
       const payload = {
@@ -2095,6 +2206,7 @@ function createAdminRouter() {
       logger.info('admin version created', {
         platform,
         versionName,
+        versionCode,
         path: req.originalUrl || req.url
       })
 

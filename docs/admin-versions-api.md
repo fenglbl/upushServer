@@ -23,6 +23,10 @@
 - `platform`
 - `status`：`all | 0 | 1`
 
+### 排序规则
+- 默认按 `versionCode` **从大到小** 排序
+- 同编码下再按 `publish_time / update_time / _id` 倒序兜底
+
 ---
 
 ## 2. 获取版本详情
